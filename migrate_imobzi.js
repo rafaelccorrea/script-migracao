@@ -189,12 +189,16 @@ async function fetchDetails(propId, retries = 3) {
 
 /**
  * Processa um imóvel individualmente usando UPSERT e Transação
+ * Double check: Se o imóvel está "available" no Imobzi, mantém/insere. Senão, desativa no DB.
  */
 async function processProperty(details, stats) {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
 
+        // Só inserir/atualizar como ativo se estiver "available" na API
+        const isAvailable = details.status === 'available';
+        
         const propData = {
             title: details.site_title || `${details.property_type} em ${details.neighborhood}`,
             description: cleanHtml(details.site_description || details.description || "Sem descrição"),
@@ -213,7 +217,8 @@ async function processProperty(details, stats) {
             salePrice: parseFloat(details.sale_value || 0),
             rentPrice: parseFloat(details.rental_value || 0),
             features: JSON.stringify(details.nearby || []),
-            isActive: details.active !== false,
+            // Se estiver available, mantém ativo. Senão, desativa no DB
+            isActive: isAvailable && (details.active !== false),
             companyId: COMPANY_ID,
             responsibleUserId: RESPONSIBLE_USER_ID,
             code: details.code,
