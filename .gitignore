@@ -1,0 +1,7 @@
+node_modules/
+*.log
+migration_errors.log
+migration_checkpoint.json
+package-lock.json
+.env
+.DS_Store
