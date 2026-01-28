@@ -269,20 +269,58 @@ async function processProperty(details, stats) {
 }
 
 /**
- * Função Principal com Paralelismo Controlado
+ * Inativa no DB um imóvel pelo imobzi_id (quando está na API mas não está "available")
+ */
+async function deactivateIfExists(imobziId, stats) {
+    const client = await pool.connect();
+    try {
+        await client.query(
+            `UPDATE properties SET "isActive" = false, updated_at = $1 
+             WHERE "companyId" = $2 AND imobzi_id = $3`,
+            [new Date(), COMPANY_ID, String(imobziId)]
+        );
+    } finally {
+        client.release();
+    }
+}
+
+/**
+ * Inativa no DB os imóveis cujo imobzi_id não está na lista retornada pela API
+ */
+async function deactivateNotInApi(imobziIdsFromApi) {
+    if (imobziIdsFromApi.length === 0) return;
+    const client = await pool.connect();
+    try {
+        const placeholders = imobziIdsFromApi.map((_, i) => `$${i + 3}`).join(', ');
+        const result = await client.query(
+            `UPDATE properties SET "isActive" = false, updated_at = $1 
+             WHERE "companyId" = $2 AND imobzi_id IS NOT NULL AND imobzi_id NOT IN (${placeholders})`,
+            [new Date(), COMPANY_ID, ...imobziIdsFromApi]
+        );
+        if (result.rowCount > 0) {
+            console.log(`\n✓ ${result.rowCount} imóvel(is) inativado(s) no DB (não estão na API).`);
+        }
+    } finally {
+        client.release();
+    }
+}
+
+/**
+ * Função Principal: buscar na API, inserir somente ativas, inativar o que não tiver na API
  */
 async function migrate() {
-    console.log("Iniciando migração otimizada...");
+    console.log("Iniciando migração: buscar na API, inserir somente ativas, inativar o que não tiver na API.");
     await setupDatabase();
 
     const properties = await fetchAllProperties();
-    console.log(`Total: ${properties.length} imóveis encontrados.`);
+    console.log(`Total: ${properties.length} imóveis encontrados na API.`);
 
+    const imobziIdsFromApi = properties.map(p => String(p.db_id));
     const checkpointPath = 'migration_checkpoint.json';
     let processedIds = fs.existsSync(checkpointPath) ? new Set(JSON.parse(fs.readFileSync(checkpointPath)).ids) : new Set();
     
-    let stats = { inserted: 0, updated: 0, errors: 0 };
-    const CONCURRENCY_LIMIT = 100; // Processa 100 imóveis simultaneamente
+    let stats = { inserted: 0, updated: 0, errors: 0, skippedInactive: 0 };
+    const CONCURRENCY_LIMIT = 100;
     let lastCheckpointSize = processedIds.size;
 
     for (let i = 0; i < properties.length; i += CONCURRENCY_LIMIT) {
@@ -291,24 +329,29 @@ async function migrate() {
         await Promise.all(batch.map(async (p) => {
             const details = await fetchDetails(p.db_id);
             if (details) {
-                await processProperty(details, stats);
+                if (details.status === 'available') {
+                    await processProperty(details, stats);
+                } else {
+                    await deactivateIfExists(p.db_id, stats);
+                    stats.skippedInactive++;
+                }
                 processedIds.add(String(p.db_id));
             } else {
                 stats.errors++;
             }
         }));
 
-        // Salvar checkpoint a cada 100 propriedades processadas (para reduzir I/O)
         if (processedIds.size - lastCheckpointSize >= 100) {
             fs.writeFileSync(checkpointPath, JSON.stringify({ ids: Array.from(processedIds) }));
             lastCheckpointSize = processedIds.size;
         }
         
-        process.stdout.write(`\rProgresso: ${processedIds.size}/${properties.length} | I: ${stats.inserted} U: ${stats.updated} E: ${stats.errors}`);
+        process.stdout.write(`\rProgresso: ${processedIds.size}/${properties.length} | I: ${stats.inserted} U: ${stats.updated} inativos: ${stats.skippedInactive} E: ${stats.errors}`);
     }
     
-    // Salvar checkpoint final
     fs.writeFileSync(checkpointPath, JSON.stringify({ ids: Array.from(processedIds) }));
+
+    await deactivateNotInApi(imobziIdsFromApi);
 
     console.log("\nMigração finalizada.");
     await pool.end();
