@@ -102,7 +102,7 @@ async function fetchAllProperties() {
         while (pageCount < maxPages) {
             // Adicionar parâmetro limit para tentar aumentar itens por página
             // Se a API não aceitar, vai usar o padrão (10)
-            let url = `${IMOBZI_BASE_URL}/properties?smart_list=${slist}&limit=100`;
+            let url = `${IMOBZI_BASE_URL}/properties?smart_list=${slist}&limit=50`;
             if (cursor) url += `&cursor=${cursor}`;
             
             let success = false;
